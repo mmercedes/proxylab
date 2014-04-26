@@ -3,7 +3,9 @@
 
 /*
 	Proxy Lab
-
+	Authors: mmercede@andrew.cmu.edu
+			 chenwu@andrew.cmu.edu
+	
 */
 
 

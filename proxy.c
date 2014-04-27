@@ -20,7 +20,8 @@ Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *accept_hdr = "Accept: text/html,application/xhtml+xml,\
 pplication/xml;q=0.9,*/*;q=0.8\r\n";
 static const char *accept_encoding_hdr = "Accept-Encoding: gzip, deflate\r\n";
-
+static const char *connection_hdr = "Connection: close\r\n";
+static const char *proxy_hdr = "Proxy-Connection: close\r\n";
 
 /*
  *  ======================================================================== 
@@ -39,6 +40,9 @@ void service_request(int connfd);
 // used in: service_request
 int parse_input(char *buffer, char *hostname, char *path, int *port);
 
+
+int GET_request(char* hostname, char* path, int port, int* serverfd,
+                riot_t* server);
 /*
  *  ======================================================================== 
  *   Begin Proxy
@@ -53,8 +57,6 @@ int main(int argc, char **argv)
     // ignore broken pipe signals, we don't want to terminate the process
     // due to SIGPIPE signal
     Signal(SIGPIPE, SIG_IGN);
-
-    printf("%s%s%s", user_agent_hdr, accept_hdr, accept_encoding_hdr);
 
     // just standard setup here
     int listenfd, connfd, port, clientlen;
@@ -108,7 +110,9 @@ void service_request(int clientfd){
     char hostname[MAXLINE];
     char path[MAXLINE];
     int port;
+    int serverfd;
     rio_t client;
+    rio_t server;
 
     buffer[MAXLINE - 1] = '\0';     // initialize the end of char-array
     Rio_readinitb(&client, clientfd);   // initialize RIO reading
@@ -119,6 +123,15 @@ void service_request(int clientfd){
         fprintf(stderr, "Bad input\n");
     }
 
+    // search cache here
+
+    // send server request if not in cache
+    if(GET_request(hostname, path, port, &serverfd, &server) != 0){
+        char error = "ERROR 404 Not Found";
+        Rio_writen(connfd, error, strlen(error));
+        close(clientfd);
+        return;
+    }   
 
 
 
@@ -139,7 +152,25 @@ int parse_input(char *buffer, char *hostname, char *path, int *port){
     return 0;
 }
 
+int GET_request(char* hostname, char* path, int port, int* serverfd,
+                riot_t* server){
+    *serverfd = Open_clientfd_r(hostname, port);
 
+    // couldn't connect to server
+    if(*serverfd < 0) return 1;
+
+    Rio_readinitb(server, serverfd);
+    Rio_writen(serverfd, "GET ", strlen("GET "));
+    Rio_writen(serverfd, path, strlen(path));
+    Rio_writen(serverfd, "HTTP/1.0\r\n", strlen("HTTP/1.0\r\n"));
+    Rio_writen(serverfd, user_agent_hdr, strlen(user_agent_hdr));
+    Rio_writen(serverfd, accept_hdr, strlen(accept_hdr));
+    Rio_writen(serverfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
+    Rio_writen(serverfd, connection_hdr, strlen(connection_hdr));
+    Rio_writen(serverfd, proxy_hdr, strlen(proxy_hdr));
+
+    return 0;
+}
 
 
 

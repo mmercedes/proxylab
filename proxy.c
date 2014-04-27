@@ -15,10 +15,8 @@
 #endif
 
 /* You won't lose style points for including these long lines in your code */
-static const char *user_agent_hdr ="User-Agent: Mozilla/5.0 (X11; \
-Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
-static const char *accept_hdr = "Accept: text/html,application/xhtml+xml,\
-pplication/xml;q=0.9,*/*;q=0.8\r\n";
+static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
+static const char *accept_hdr = "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n";
 static const char *accept_encoding_hdr = "Accept-Encoding: gzip, deflate\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_hdr = "Proxy-Connection: close\r\n";

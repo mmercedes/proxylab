@@ -57,7 +57,7 @@ int main(int argc, char **argv)
     printf("%s%s%s", user_agent_hdr, accept_hdr, accept_encoding_hdr);
 
     // just standard setup here
-    int listenfd, connfd, port, clientlen;
+    int listenfd, connfd, *clientfd, port, clientlen;
     struct sockaddr_in clientaddr;
     if (argc != 2){
         fprintf(stderr, "usage: %s <port>\n", argv[0]); exit(0);
@@ -70,17 +70,17 @@ int main(int argc, char **argv)
     // main thread enters infinite loop to process requests
     while (1){
         pthread_t tid;
-        int *fdptr; // the file the client reads from
+        clientfd = Malloc(sizeof(int));    // avoid race condition
 
         clientlen = sizeof(clientaddr);
         connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *)&clientlen);
+        *clientfd = connfd;
 
-        fdptr = Malloc(sizeof(int));    // avoid race condition
-        Pthread_create(&tid, NULL, proxy_thread, (void *)fdptr);
+        Pthread_create(&tid, NULL, proxy_thread, (void *)clientfd);
     }
 
     // end of main thread
-    return 0;
+    return 1;
 }
 
 void *proxy_thread(void *vargp){
@@ -92,9 +92,9 @@ void *proxy_thread(void *vargp){
         fd = *(int *)vargp;
         Free(vargp);    // done with fd, free the memory allocated in main
 
-        service_request(fd); 
         // Service client by writing the the file fd, from which
         // the client reads the data
+        service_request(fd); 
 
         Close(fd);
     }
@@ -110,15 +110,21 @@ void service_request(int clientfd){
     int port;
     rio_t client;
 
-    buffer[MAXLINE - 1] = '\0';     // initialize the end of char-array
+    // initialize the request entries
+    buffer[0] = '\0';
+    path[0] = '\0';
+    hostname[0] = '\0';
+    port = 80;
+
     Rio_readinitb(&client, clientfd);   // initialize RIO reading
 
-    Rio_readlineb(&client, buffer, MAXLINE);
     // store the first line in client input to buffer
+    if (Rio_readlineb(&client, buffer, MAXLINE) < 0) Close(clientfd);
+    
     if (parse_input(buffer, hostname, path, &port) != 0){
-        fprintf(stderr, "Bad input\n");
+        fprintf(stderr, "Bad input request: Abort\n"); Close(clientfd);
     }
-
+    printf("\n READING INPUT: ....\n hostname: %s, port: %d, path: %s\n", hostname, port, path);
 
 
 
@@ -126,16 +132,50 @@ void service_request(int clientfd){
 }
 
 int parse_input(char *buffer, char *hostname, char *path, int *port){
+    size_t i, j;  // index counters
+
     if (strncmp(buffer, "GET http://", strlen("GET http://")) != 0){
         // the command is not "GET", or the url does not begin correctly
         return -1;
     }
-    buffer += strlen("GET http://");
 
-    // get the domain name, 
+    // get the domain name, port number if any, path from input
     // e.g. www.cs.cmu.edu from www.cs.cmu.edu:80/~213 or www.cs.cmu.edu/~213
-    
+    i = 0;
+    j = 0;
+    while (i < strlen(buffer) - 1 && buffer[i] != ':' && 
+           buffer[i] != '/' && buffer[i] != ' '){
+        // write host name which ends at / or : or end of url
+        hostname[j] = buffer[i];
+        i++;
+        j++;
+    }
+    hostname[j+1] = '\0';   // end of string
 
+    if (buffer[i] == ':'){
+        // we get the port (integer)
+        i++;    // go to the number
+        sscanf(buffer + i, "%d", port);
+        while (i < strlen(buffer) - 1 && 
+               buffer[i] != '/' && buffer[i] != ' '){
+            // offset to path or end of url
+            i++;
+        }
+    }
+
+    if (buffer[i] == '/'){
+        // we get the path
+        j = 0;
+        while (i < strlen(buffer) - 1 && buffer[i] != ' '){
+            // offset to end of url
+            path[j] = buffer[i];
+            i++;
+            j++;
+        }
+        path[j+1] = '\0';   // end of string
+    }
+
+    // disregard everything that follows
     return 0;
 }
 

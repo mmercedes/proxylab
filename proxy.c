@@ -2,10 +2,10 @@
 #include "csapp.h"
 
 /*
-	Proxy Lab
-	Authors: mmercede@andrew.cmu.edu
-			 chenwu@andrew.cmu.edu
-	
+    Proxy Lab
+    Authors: mmercede@andrew.cmu.edu
+             chenwu@andrew.cmu.edu
+    
 */
 
 
@@ -20,23 +20,23 @@ static const char *accept_encoding_hdr = "Accept-Encoding: gzip, deflate\r\n";
 
 /* Define thread struct */
 struct thread_s {
-	struct sockaddr_in socket;
-	int fd;
+    struct sockaddr_in socket;
+    int fd;
 };
 
 int main(int argc, char **argv)
 {
-	int port;
-	pthread_t thread;
-	int localfd;
-	struct thread_s* t;
+    int port;
+    pthread_t thread;
+    int localfd;
+    struct thread_s* t;
 
 
-	if (argc != 2) {
-	fprintf(stderr, "Usage: %s <port>\n", argv[0]);
-	exit(0);
-	}
-  	Signal(SIGPIPE, SIG_IGN);
+    if (argc != 2) {
+    fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+    exit(0);
+    }
+    Signal(SIGPIPE, SIG_IGN);
 
 
     return 0;

@@ -41,6 +41,8 @@ int parse_input(char *buffer, char *hostname, char *path, int *port);
 
 int GET_request(char* hostname, char* path, int port, int* serverfd,
                 rio_t* server);
+
+void respond_to_client(rio_t* server, int clientfd);
 /*
  *  ======================================================================== 
  *   Begin Proxy
@@ -112,6 +114,7 @@ void service_request(int clientfd){
     int serverfd;
     rio_t client;
     rio_t server;
+    char *error = "ERROR 404 Not Found";
 
     // initialize the request entries
     buffer[0] = '\0';
@@ -125,18 +128,21 @@ void service_request(int clientfd){
     if (Rio_readlineb(&client, buffer, MAXLINE) < 0) Close(clientfd);
     
     if (parse_input(buffer, hostname, path, &port) != 0){
-        fprintf(stderr, "Bad input request: Abort\n"); Close(clientfd);
+        fprintf(stderr, "Bad input request: Abort\n");
+        Close(clientfd);
     }
     // search cache here
 
     // send server request if not in cache
     if(GET_request(hostname, path, port, &serverfd, &server) != 0){
-        char *error = "ERROR 404 Not Found";
         Rio_writen(clientfd, error, strlen(error));
         close(clientfd);
         return;
     }  
 
+    respond_to_client(&server, clientfd);
+    close(serverfd);
+    close(clientfd);
     return;
 }
 
@@ -214,7 +220,16 @@ int GET_request(char* hostname, char* path, int port, int* serverfd,
 }
 
 
+void respond_to_client(rio_t* server, int clientfd){
+    char buffer[MAXLINE];
+    int bytes = 0;
 
+    while((bytes = Rio_readlineb(server, buffer, MAXLINE)) != 0){
+        if(buffer[0] == '\r') break;
+        p_Rio_writen(clientfd, buffer, strlen(buffer));
+    }
+    return;
+}
 
 
 

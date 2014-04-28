@@ -1,8 +1,13 @@
-#include <stdlib.c>
+#include <stdlib.h>
 #include <string.h>
-#include "csapp.h"
+#include "pcache.h"
+
+#define MAX_SIZE 1049000
+
+int cache_check(cache* c);
 
 cache* cache_new(){
+	cache* c;
 	c = malloc(sizeof(cache));
 	c->start = NULL;
 	c->end = NULL;
@@ -27,17 +32,26 @@ void cache_free(cache* c){
 
 void cache_add(cache* c, char* key, char* data, size_t size){
 	object* obj = malloc(sizeof(object));
-	obj->key = malloc(strlen(key)*sizeof(char));
-	obj->data = malloc(size*sizeof(char));
+	obj->key = malloc(strlen(key)*sizeof(char)+1);
+	obj->data = malloc(strlen(data)*sizeof(char)+1);
 
 	strcpy(obj->key, key);
 	strcpy(obj->data, data);
 
 	obj->next = c->start;
 	obj->prev = NULL;
-	c->start->prev = obj;
+	if(c->start != NULL) c->start->prev = obj;
 	c->start = obj;
 	c->size += size;
+
+	// kick out last object
+	if(c->size > MAX_SIZE){
+		free(c->end->key);
+		free(c->end->data);
+		c->end = c->end->prev;
+		free(c->end->next);
+		c->end->next = NULL;
+	}
 	return;
 }
 
@@ -52,7 +66,7 @@ void cache_update(cache* c, object* obj){
 }
 
 object* cache_lookup(cache* c, char* key){
-	current = c->start;
+	object* current = c->start;
 
 	while(current != NULL){
 		if(!strcmp(current->key, key)) return current;

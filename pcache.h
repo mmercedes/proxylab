@@ -21,6 +21,7 @@ void cache_free(cache* c);
 void cache_add(cache* c, char* key, char* data, size_t size);
 void cache_update(cache* c, object* obj);
 object* cache_lookup(cache* c, char* key);
+int cache_check(cache* c);
 
 
 #endif

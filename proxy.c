@@ -3,6 +3,7 @@
  */
 
 #include "csapp.h"
+#include "pcache.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -43,7 +44,24 @@ char *get_request_header(rio_t *client, char *header);
 int GET_request(char *hostname, char *path, int port, char *unparsed,
                 int *serverfd, rio_t *server);
 
-void respond_to_client(rio_t* server, int clientfd);
+void respond_to_client(rio_t* server, int clientfd, char *cache_key);
+
+void cache_r_lock();
+void cache_r_unlock();
+void cache_w_lock();
+void cache_w_unlock();
+
+/*
+ *  ======================================================================== 
+ *   Declare Global Variables
+ *  ========================================================================
+ */
+
+int readcnt;
+sem_t mutex;
+sem_t w;
+cache* p_cache;
+
 /*
  *  ======================================================================== 
  *   Begin Proxy
@@ -55,20 +73,25 @@ void respond_to_client(rio_t* server, int clientfd);
 // handle the detailed activities should become clients to internet servers
 int main(int argc, char **argv)
 {    
+    int listenfd, connfd, *clientfd, port, clientlen;
+    struct sockaddr_in clientaddr;
     // ignore broken pipe signals, we don't want to terminate the process
     // due to SIGPIPE signal
     Signal(SIGPIPE, SIG_IGN);
 
-    // just standard setup here
-    int listenfd, connfd, *clientfd, port, clientlen;
-    struct sockaddr_in clientaddr;
+
     if (argc != 2){
         fprintf(stderr, "usage: %s <port>\n", argv[0]); exit(0);
     }
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
     
-    // semaphores: not sure what to do yet 
+    // initialize semaphores to 1
+    Sem_init(&mutex, 0, 1);
+    Sem_init(&w, 0, 1);
+    readcnt = 0;
+
+    p_cache = cache_new();
 
     // main thread enters infinite loop to process requests
     while (1){
@@ -82,7 +105,7 @@ int main(int argc, char **argv)
         Pthread_create(&tid, NULL, proxy_thread, (void *)clientfd);
     }
 
-    // end of main thread
+    cache_free(p_cache);
     return 1;
 }
 
@@ -108,6 +131,7 @@ void *proxy_thread(void *vargp){
 // and ...
 void service_request(int clientfd){
     char buffer[MAXLINE];
+    char cache_key[MAXLINE];
     char hostname[MAXLINE];
     char path[MAXLINE];
     int port;
@@ -116,6 +140,7 @@ void service_request(int clientfd){
     rio_t server;
     char *error = "ERROR 404 Not Found";
     char *header;
+    object* cache_obj;
 
     // initialize the request entries
     buffer[0] = '\0';
@@ -129,6 +154,7 @@ void service_request(int clientfd){
     if (Rio_readlineb(&client, buffer, MAXLINE) < 0){ 
         return;
     }
+    strcpy(cache_key, buffer);
 
     if (parse_input(buffer, hostname, path, &port) != 0){
         fprintf(stderr, "Not a GET request: Abort\n");
@@ -138,17 +164,29 @@ void service_request(int clientfd){
     header = malloc(MAXLINE*sizeof(char));
     bzero(header, MAXLINE);
     header = get_request_header(&client, header);
-    // search cache here
+    
+    // search the cache
+    cache_r_lock();
+    cache_obj = cache_lookup(p_cache, cache_key);
+    cache_r_unlock();
 
+    // cache hit
+    if(cache_obj != NULL){
+        Rio_writen(clientfd, (void*)cache_obj->data, strlen(cache_obj->data));
+        cache_w_lock();
+        cache_update(p_cache, cache_obj);
+        cache_w_unlock();
+    }
     // send server request if not in cache
-    if(GET_request(hostname, path, port, header, &serverfd, &server) != 0){
-        Rio_writen(clientfd, error, strlen(error));
-        Free(header);
-        return;
-    }  
-
-    respond_to_client(&server, clientfd);
-    Close(serverfd);
+    else{
+        if(GET_request(hostname, path, port, header, &serverfd, &server) != 0){
+            Rio_writen(clientfd, error, strlen(error));
+            Free(header);
+            return;
+        }  
+        respond_to_client(&server, clientfd, cache_key);
+        Close(serverfd);
+    }
     Free(header);
     return;
 }
@@ -254,15 +292,66 @@ int GET_request(char* hostname, char* path, int port, char *header,
     return 0;
 }
 
-void respond_to_client(rio_t* server, int clientfd){
+void respond_to_client(rio_t *server, int clientfd, char* cache_key){
     char buffer[MAXLINE];
-    int bytes = 0;
+    char cache_data[MAX_OBJECT_SIZE];
+    char *current_pos = cache_data;
+    size_t data_size = 0;
+    size_t bytes = 0;
+    int cache_space;
+    int cacheable = 0;
 
     bzero(buffer, MAXLINE);
 
     while((bytes = Rio_readlineb(server, buffer, MAXLINE)) > 0){
         p_Rio_writen(clientfd, buffer, bytes);
+        data_size += bytes;
+
+        if(data_size > MAX_OBJECT_SIZE) cacheable = 0;
+        else cacheable = 1;
+
+        if(cacheable){
+            memcpy(current_pos, buffer, bytes);
+            current_pos += bytes;
+        }
         bzero(buffer, MAXLINE);
+    }
+    if(cacheable){
+        cache_r_lock();
+        cache_space = (p_cache->size+data_size <= MAX_CACHE_SIZE);
+        cache_r_unlock();
+        if(cache_space){
+            cache_w_lock();
+            cache_add(p_cache, cache_key, cache_data, data_size);
+            cache_w_unlock();
+        }
     }
     return;
 }
+
+void cache_r_lock(){
+    P(&mutex);
+    readcnt++;
+    if(readcnt == 1) P(&w);
+    V(&mutex);
+    return;
+}
+
+void cache_r_unlock(){
+    P(&mutex);
+    readcnt--;
+    if(readcnt == 0) V(&w);
+    V(&mutex);
+    return;
+}
+
+void cache_w_lock(){
+    P(&w);
+    return;
+}
+
+void cache_w_unlock(){
+    V(&w);
+    return;
+}
+

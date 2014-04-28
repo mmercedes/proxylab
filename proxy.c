@@ -90,17 +90,16 @@ void *proxy_thread(void *vargp){
     Pthread_detach(Pthread_self());
     // detached thread gets terminated by the system once it's done
 
-    while (1) {
-        int fd;
-        fd = *(int *)vargp;
-        Free(vargp);    // done with fd, free the memory allocated in main
+    int fd;
+    fd = *(int *)vargp;
+    //Free(vargp);    // done with fd, free the memory allocated in main
 
-        // Service client by writing the the file fd, from which
-        // the client reads the data
-        service_request(fd); 
+    // Service client by writing the the file fd, from which
+    // the client reads the data
+    service_request(fd); 
 
-        Close(fd);
-    }
+    Close(fd);
+    return NULL;
 }
 
 // this is where most of the server work gets done, such as 
@@ -122,27 +121,30 @@ void service_request(int clientfd){
     hostname[0] = '\0';
     port = 80;
 
+    printf("HANDLING REQUEST\n");
+
     Rio_readinitb(&client, clientfd);   // initialize RIO reading
 
     // store the first line in client input to buffer
     if (Rio_readlineb(&client, buffer, MAXLINE) < 0) Close(clientfd);
+
+    printf("URL: %s\n", buffer);
     
     if (parse_input(buffer, hostname, path, &port) != 0){
         fprintf(stderr, "Bad input request: Abort\n");
-        Close(clientfd);
+        return;
     }
     // search cache here
 
+    printf("Request %s %s %d\n", hostname, path, port);
     // send server request if not in cache
     if(GET_request(hostname, path, port, &serverfd, &server) != 0){
         Rio_writen(clientfd, error, strlen(error));
-        close(clientfd);
         return;
     }  
 
     respond_to_client(&server, clientfd);
-    close(serverfd);
-    close(clientfd);
+    Close(serverfd);
     return;
 }
 
@@ -202,7 +204,7 @@ void p_Rio_writen(int fd, const char* buf, size_t len){
 
 int GET_request(char* hostname, char* path, int port, int* serverfd,
                 rio_t* server){
-    *serverfd = Open_clientfd_r(hostname, port);
+    *serverfd = open_clientfd_r(hostname, port);
 
     // couldn't connect to server
     if(*serverfd < 0) return 1;
@@ -229,166 +231,9 @@ void respond_to_client(rio_t* server, int clientfd){
         if(buffer[0] == '\r') break;
         p_Rio_writen(clientfd, buffer, strlen(buffer));
     }
+    while((bytes = Rio_readlineb(server, buffer, MAXLINE)) > 0){
+        p_Rio_writen(clientfd, buffer, bytes);
+    }
     return;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

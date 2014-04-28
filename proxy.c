@@ -36,12 +36,12 @@ void service_request(int connfd);
 // host name, port by overwriting the where they are stored in memory
 // return 0 upon request
 // used in: service_request
-int parse_input(char *buffer, char *hostname, char *path, 
-                int *port, char *unparsed);
+int parse_input(char *buffer, char *hostname, char *path, int *port);
 
+char *get_request_header(rio_t *client, char *header);
 
-int GET_request(char* hostname, char* path, int port, char *unparsed,
-                int* serverfd, rio_t* server);
+int GET_request(char *hostname, char *path, int port, char *unparsed,
+                int *serverfd, rio_t *server);
 
 void respond_to_client(rio_t* server, int clientfd);
 /*
@@ -110,12 +110,12 @@ void service_request(int clientfd){
     char buffer[MAXLINE];
     char hostname[MAXLINE];
     char path[MAXLINE];
-    char unparsed[MAXLINE];
     int port;
     int serverfd;
     rio_t client;
     rio_t server;
     char *error = "ERROR 404 Not Found";
+    char *header;
 
     // initialize the request entries
     buffer[0] = '\0';
@@ -130,31 +130,36 @@ void service_request(int clientfd){
         return;
     }
 
-    if (parse_input(buffer, hostname, path, &port, unparsed) != 0){
+    if (parse_input(buffer, hostname, path, &port) != 0){
         fprintf(stderr, "Not a GET request: Abort\n");
         return;
     }
+
+    header = malloc(MAXLINE*sizeof(char));
+    bzero(header, MAXLINE);
+    header = get_request_header(&client, header);
     // search cache here
 
     // send server request if not in cache
-    if(GET_request(hostname, path, port, unparsed, &serverfd, &server) != 0){
+    if(GET_request(hostname, path, port, header, &serverfd, &server) != 0){
         Rio_writen(clientfd, error, strlen(error));
+        Free(header);
         return;
     }  
 
     respond_to_client(&server, clientfd);
     Close(serverfd);
+    Free(header);
     return;
 }
 
 
-int parse_input(char *buffer, char *hostname, char *path, 
-                int *port, char *unparsed){
+int parse_input(char *buffer, char *hostname, char *path, int *port){
+
     size_t i, j;  // index counters
 
     if (strncmp(buffer, "GET http://", strlen("GET http://")) != 0){
         // the command is not "GET", or the url does not begin correctly
-        strcpy(unparsed, buffer);
         return -1;
     }
 
@@ -194,28 +199,39 @@ int parse_input(char *buffer, char *hostname, char *path,
         }
         path[j] = '\0';   // end of string
     }
-
-    // put the unvisited string into unparsed
-    while (i < strlen(buffer) - 1 && 
-           !(buffer[i] == '\r' && buffer[i+1] == '\n')){
-        // navigate to buffer reads \r\n
-        i++;
-    }
-    i += strlen("\r\n");     // go to the first character after \r\n
-
-    strcpy(unparsed, buffer + i);
-
-
     return 0;
+}
+
+char *get_request_header(rio_t *client, char *header){
+    size_t size = MAXLINE;
+    int bytes;
+    char buffer[MAXLINE];
+
+    while((bytes = Rio_readlineb(client, buffer, MAXLINE))){
+        if(buffer[0] == '\r'){
+            strcat(header, buffer);
+            return header;
+        }
+        if(strstr(buffer, "Host:") != NULL) continue;
+        if(strstr(buffer, "User-Agent:") != NULL) continue;
+        if(strstr(buffer, "Accept:") != NULL) continue;
+        if(strstr(buffer, "Connection:") != NULL) continue;
+        if(strstr(buffer, "Proxy-Connection:") != NULL) continue;
+        strcat(header, buffer);
+        size += MAXLINE;
+        header = realloc(header, size);
+    }
+    return header;
 }
 
 void p_Rio_writen(int fd, const char* buf, size_t len){
     Rio_writen(fd, (void*)buf, len);
 }
 
-int GET_request(char* hostname, char* path, int port, char *unparsed,
+int GET_request(char* hostname, char* path, int port, char *header,
                 int* serverfd, rio_t* server){
-    *serverfd = Open_clientfd_r(hostname, port);
+
+    *serverfd = open_clientfd_r(hostname, port);
 
     // couldn't connect to server
     if(*serverfd < 0) return 1;
@@ -227,12 +243,12 @@ int GET_request(char* hostname, char* path, int port, char *unparsed,
     p_Rio_writen(*serverfd, "Host: ", strlen("Host: "));
     p_Rio_writen(*serverfd, hostname, strlen(hostname));
     p_Rio_writen(*serverfd, "\r\n", strlen("\r\n"));
-    p_Rio_writen(*serverfd, unparsed, strlen(unparsed));
     p_Rio_writen(*serverfd, user_agent_hdr, strlen(user_agent_hdr));
     p_Rio_writen(*serverfd, accept_hdr, strlen(accept_hdr));
     p_Rio_writen(*serverfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
     p_Rio_writen(*serverfd, connection_hdr, strlen(connection_hdr));
     p_Rio_writen(*serverfd, proxy_hdr, strlen(proxy_hdr));
+    p_Rio_writen(*serverfd, header, strlen(header));
     p_Rio_writen(*serverfd, "\r\n", strlen("\r\n"));
 
     return 0;
@@ -250,162 +266,3 @@ void respond_to_client(rio_t* server, int clientfd){
     }
     return;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

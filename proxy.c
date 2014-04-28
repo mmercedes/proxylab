@@ -121,14 +121,10 @@ void service_request(int clientfd){
     hostname[0] = '\0';
     port = 80;
 
-    printf("HANDLING REQUEST\n");
-
     Rio_readinitb(&client, clientfd);   // initialize RIO reading
 
     // store the first line in client input to buffer
     if (Rio_readlineb(&client, buffer, MAXLINE) < 0) Close(clientfd);
-
-    printf("URL: %s\n", buffer);
     
     if (parse_input(buffer, hostname, path, &port) != 0){
         fprintf(stderr, "Bad input request: Abort\n");
@@ -136,7 +132,6 @@ void service_request(int clientfd){
     }
     // search cache here
 
-    printf("Request %s %s %d\n", hostname, path, port);
     // send server request if not in cache
     if(GET_request(hostname, path, port, &serverfd, &server) != 0){
         Rio_writen(clientfd, error, strlen(error));
@@ -169,7 +164,7 @@ int parse_input(char *buffer, char *hostname, char *path, int *port){
         i++;
         j++;
     }
-    hostname[j+1] = '\0';   // end of string
+    hostname[j] = '\0';   // end of string
 
     if (buffer[i] == ':'){
         // we get the port (integer)
@@ -191,7 +186,7 @@ int parse_input(char *buffer, char *hostname, char *path, int *port){
             i++;
             j++;
         }
-        path[j+1] = '\0';   // end of string
+        path[j] = '\0';   // end of string
     }
 
     // disregard everything that follows
@@ -212,12 +207,13 @@ int GET_request(char* hostname, char* path, int port, int* serverfd,
     Rio_readinitb(server, *serverfd);
     p_Rio_writen(*serverfd, "GET ", strlen("GET "));
     p_Rio_writen(*serverfd, path, strlen(path));
-    p_Rio_writen(*serverfd, "HTTP/1.0\r\n", strlen("HTTP/1.0\r\n"));
+    p_Rio_writen(*serverfd, " HTTP/1.0\r\n", strlen(" HTTP/1.0\r\n"));
     p_Rio_writen(*serverfd, user_agent_hdr, strlen(user_agent_hdr));
     p_Rio_writen(*serverfd, accept_hdr, strlen(accept_hdr));
     p_Rio_writen(*serverfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
     p_Rio_writen(*serverfd, connection_hdr, strlen(connection_hdr));
     p_Rio_writen(*serverfd, proxy_hdr, strlen(proxy_hdr));
+    p_Rio_writen(*serverfd, "\r\n", strlen("\r\n"));
 
     return 0;
 }
@@ -227,12 +223,15 @@ void respond_to_client(rio_t* server, int clientfd){
     char buffer[MAXLINE];
     int bytes = 0;
 
-    while((bytes = Rio_readlineb(server, buffer, MAXLINE)) != 0){
-        if(buffer[0] == '\r') break;
-        p_Rio_writen(clientfd, buffer, strlen(buffer));
-    }
+    // while((bytes = Rio_readlineb(server, buffer, MAXLINE)) != 0){
+    //     if(buffer[0] == '\r') break;
+    //     p_Rio_writen(clientfd, buffer, strlen(buffer));
+    // }
+    bzero(buffer, MAXLINE);
+
     while((bytes = Rio_readlineb(server, buffer, MAXLINE)) > 0){
         p_Rio_writen(clientfd, buffer, bytes);
+        bzero(buffer, MAXLINE);
     }
     return;
 }

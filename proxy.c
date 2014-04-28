@@ -158,6 +158,7 @@ int parse_input(char *buffer, char *hostname, char *path, int *port){
     // get the domain name, port number if any, path from input
     // e.g. www.cs.cmu.edu from www.cs.cmu.edu:80/~213 or www.cs.cmu.edu/~213
     i = 0;
+    i += strlen("GET http://");
     j = 0;
     while (i < strlen(buffer) - 1 && buffer[i] != ':' && 
            buffer[i] != '/' && buffer[i] != ' '){

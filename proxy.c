@@ -1,11 +1,24 @@
 /*
-    Proxy Lab
+ *  PROXY LAB
+ *
+ * Matt Mercedes (mmercede)
+ * Nathan Wu (chenwu)
+ *
+ *
+ * A multithreaded web proxy with caching.
+ * 
+ * To implement a cache we created our own header file called pcache.h
+ * It provides functions to add/remove from a linked-list style cache
+ * To decide what objects remain in the cache, we have implemented a least 
+ * recently used system to remove less frequently accesed data from the cache
+ * 
+ *
  */
 
 #include "csapp.h"
 #include "pcache.h"
 
-/* Recommended max cache and object sizes */
+// Recommended max cache and object sizes 
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
@@ -15,44 +28,58 @@
 #define debug_printf(...) printf(__VA_ARGS__)
 #endif
 
-/* You won't lose style points for including these long lines in your code */
+// a client's request header will have these fields overwritten
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *accept_hdr = "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n";
 static const char *accept_encoding_hdr = "Accept-Encoding: gzip, deflate\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_hdr = "Proxy-Connection: close\r\n";
 
+
 /*
  *  ======================================================================== 
  *   Function Overview 
  *  ========================================================================
  */
-// the main function of creating each new proxy thread
-// used in: main
+
+// function called immediately after thread creation
 void *proxy_thread(void *vargp);
-// the function for each thread that services the requesting client
-// used in: proxy_thread
+
+// takes a client connection file descriptor and handles their request
 void service_request(int connfd);
-// the function that takes the command (buffer), and return the
-// host name, port by overwriting the where they are stored in memory
-// return 0 upon request
-// used in: service_request
+
+// reads the first line sent by the client and sets the hostname, path, and
+// port variables, returns 1 if not a GET request and 0 otherwise
 int parse_input(char *buffer, char *hostname, char *path, int *port);
 
+// reads from the client and forms a header to send to the requested server
 char *get_request_header(int cfd, rio_t *client, char *header);
 
+// makes a GET request on behalf of the client to the requested server
 int GET_request(char *hostname, char *path, int port, char *unparsed,
                 int *serverfd, rio_t *server, int connfd);
 
-void respond_to_client(rio_t* server, int serverfd,
+// feeds the response from the server back to the client
+// will also attempt to cache the server's response if possible
+void respond_to_client(rio_t *server, int serverfd,
                        int clientfd, char *cache_key);
 
+// a wrapper for rio_readlineb that will safely close a thread upon an error
 int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size);
 
+// a wrapper for rio_writen that will safely close a thread upon an error
+void p_Rio_writen(int sfd, int cfd, const char *buf, size_t len);
+
+// reader lock for the cache to allow multiple readers safely access the cache
+// readers have priority over writers and block them
 void cache_r_lock();
 void cache_r_unlock();
-void cache_w_lock();
-void cache_w_unlock();
+
+// writer lock for the cache to allow a single writer to safely alter the cache
+// all other readers and writers are blocked
+void inline cache_w_lock();
+void inline cache_w_unlock();
+
 
 /*
  *  ======================================================================== 
@@ -60,10 +87,12 @@ void cache_w_unlock();
  *  ========================================================================
  */
 
+
 int readcnt;
 sem_t mutex;
 sem_t w;
 cache* p_cache;
+
 
 /*
  *  ======================================================================== 
@@ -71,21 +100,26 @@ cache* p_cache;
  *  ========================================================================
  */
 
-// The proxy serves as a client and a server at the same time
-// the main program itself is a server, the running threads that
-// handle the detailed activities should become clients to internet servers
+
+/*
+ * The proxy serves as a client and a server at the same time
+ * the main program itself is a server, the running threads that
+ * handle a client request should become clients to internet servers
+ */
+
 int main(int argc, char **argv)
 {    
     int listenfd, connfd, *clientfd, port, clientlen;
     struct sockaddr_in clientaddr;
+
     // ignore broken pipe signals, we don't want to terminate the process
     // due to SIGPIPE signal
     Signal(SIGPIPE, SIG_IGN);
 
-
     if (argc != 2){
         fprintf(stderr, "usage: %s <port>\n", argv[0]); exit(0);
     }
+
     port = atoi(argv[1]);
     listenfd = Open_listenfd(port);
     
@@ -105,9 +139,11 @@ int main(int argc, char **argv)
         connfd = Accept(listenfd, (SA *)&clientaddr, (socklen_t *)&clientlen);
         *clientfd = connfd;
 
+        // spawn a thread to handle each request
         Pthread_create(&tid, NULL, proxy_thread, (void *)clientfd);
     }
 
+    // control should never reach here
     cache_free(p_cache);
     return 1;
 }
@@ -117,9 +153,10 @@ void *proxy_thread(void *vargp){
     Pthread_detach(Pthread_self());
     // detached thread gets terminated by the system once it's done
 
-    int fd;
-    fd = *(int *)vargp;
-    Free(vargp);    // done with fd, free the memory allocated in main
+    int fd = *(int *)vargp;
+
+    // done with fd, free the memory allocated in main
+    Free(vargp);
 
     service_request(fd); 
 
@@ -127,9 +164,7 @@ void *proxy_thread(void *vargp){
     return NULL;
 }
 
-// this is where most of the server work gets done, such as 
-// parsing commands, reading and writing to cache, fetch objects,
-// and ...
+
 void service_request(int clientfd){
     char buffer[MAXLINE];
     char cache_key[MAXLINE];
@@ -157,9 +192,9 @@ void service_request(int clientfd){
     p_Rio_readlineb(0, clientfd, &client, buffer, MAXLINE);
 
     if (parse_input(buffer, hostname, path, &port) != 0){
-        fprintf(stderr, "Not a GET request: Abort\n");
-        return;
+        return; // not a GET request
     }
+    // create a key for future cache lookup
     sprintf(cache_key, "%s %s", hostname, path);
 
     header = malloc(MAXLINE*sizeof(char));
@@ -174,11 +209,9 @@ void service_request(int clientfd){
 
     // cache hit
     if(cache_hit){
-        printf("\n/////////////// CACHE HIT ////////////\n");
-        printf("%s\n\n", cache_key);
 
         cache_r_lock();
-        rio_writen(clientfd, (void*)cache_obj->data, strlen(cache_obj->data));
+        rio_writen(clientfd, (void*)cache_obj->data, cache_obj->size);
         cache_r_unlock();
 
         cache_w_lock();
@@ -189,6 +222,7 @@ void service_request(int clientfd){
     else{
         if(GET_request(hostname, path, port, header, 
                        &serverfd, &server, clientfd) != 0){
+            //failed connection to server
             rio_writen(clientfd, error, strlen(error));
             Free(header);
             return;
@@ -201,7 +235,7 @@ void service_request(int clientfd){
 }
 
 
-int parse_input(char* buffer, char* hostname, char* path, int *port)
+int parse_input(char *buffer, char *hostname, char *path, int *port)
 {
     // not a request we can handle
     if (strncmp(buffer, "GET http://", strlen("GET http://")) != 0) return 1;
@@ -227,32 +261,43 @@ int parse_input(char* buffer, char* hostname, char* path, int *port)
     return 0;
 }
 
+
 char *get_request_header(int cfd, rio_t *client, char *header){
-    size_t size = MAXLINE;
+    int size = MAXLINE;
     int bytes;
+    int total_bytes = 0;
     char buffer[MAXLINE];
+
 
     while((bytes = p_Rio_readlineb(0, cfd, client, buffer, MAXLINE))){
         if(buffer[0] == '\r'){
             strcat(header, buffer);
             return header;
         }
+        // proxy overwrites these fields so skip reading them from client
         if(strstr(buffer, "Host:") != NULL) continue;
         if(strstr(buffer, "User-Agent:") != NULL) continue;
         if(strstr(buffer, "Accept:") != NULL) continue;
         if(strstr(buffer, "Connection:") != NULL) continue;
         if(strstr(buffer, "Proxy-Connection:") != NULL) continue;
+
+        // make sure our header is big enough to continue reading
+        total_bytes += bytes;
+        if(total_bytes > size){
+            size += MAXLINE;
+            header = realloc(header, size);
+        }
         strcat(header, buffer);
-        size += MAXLINE;
-        header = realloc(header, size);
     }
     return header;
 }
+
 
 int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size){
     int bytes;
 
     if((bytes = rio_readlineb(conn, buffer, size)) < 0){
+        // exit thread
         if(sfd) close(sfd);
         close(cfd);
         Pthread_exit(NULL);
@@ -263,20 +308,23 @@ int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size){
 
 void p_Rio_writen(int sfd, int cfd, const char* buf, size_t len){
     if(rio_writen(sfd, (void*)buf, len) < 0){
+        // exit thread
         close(sfd);
         close(cfd);
         Pthread_exit(NULL);
     }
 }
 
-int GET_request(char* hostname, char* path, int port, char *header,
-                int* serverfd, rio_t* server, int connfd){
+
+int GET_request(char *hostname, char *path, int port, char *header,
+                int *serverfd, rio_t *server, int connfd){
 
     *serverfd = open_clientfd_r(hostname, port);
 
     // couldn't connect to server
     if(*serverfd < 0) return 1;
-                                                        
+                                    
+    // send server an edited verision of the client's header                                         
     Rio_readinitb(server, *serverfd);
     p_Rio_writen(*serverfd, connfd, "GET ", strlen("GET "));
     p_Rio_writen(*serverfd, connfd, path, strlen(path));
@@ -296,40 +344,40 @@ int GET_request(char* hostname, char* path, int port, char *header,
     return 0;
 }
 
+
 void respond_to_client(rio_t *server, int serverfd,
-                       int clientfd, char* cache_key){
-    
+                       int clientfd, char *cache_key){
+
     char buffer[MAXLINE];
     char cache_data[MAX_OBJECT_SIZE];
     char *ptr = cache_data;
     int offset = 0;
     int bytes = 0;
-    //char terminator = '\0';
 
     bzero(buffer, MAXLINE);
 
-    printf("\n///////////// SERVER REQUEST /////////////\n");
-    printf("%s\n\n", cache_key);
-
-
-    while((bytes = Rio_readnb(server, buffer, MAXLINE)) > 0){
+    // read data from the server
+    while((bytes = rio_readnb(server, buffer, MAXLINE)) > 0){
         p_Rio_writen(clientfd, serverfd, buffer, bytes);
 
+        // attempt to save data for cache
         if(offset+bytes < MAX_OBJECT_SIZE){
             memcpy(ptr+offset, buffer, bytes);
         }
         offset += bytes;
         bzero(buffer, MAXLINE);
     }
+    if(bytes == -1) return; // failed reading from server
 
+    // cache the data received from the server
     if(offset < MAX_OBJECT_SIZE && offset > 0){
-        //memcpy(current_pos, &terminator, 1);
         cache_w_lock();
         cache_add(p_cache, cache_key, cache_data, offset);
         cache_w_unlock();
     }
     return;
 }
+
 
 void cache_r_lock(){
     P(&mutex);
@@ -339,6 +387,7 @@ void cache_r_lock(){
     return;
 }
 
+
 void cache_r_unlock(){
     P(&mutex);
     readcnt--;
@@ -347,9 +396,11 @@ void cache_r_unlock(){
     return;
 }
 
+
 void inline cache_w_lock(){
     P(&w);
 }
+
 
 void inline cache_w_unlock(){
     V(&w);

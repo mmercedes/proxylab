@@ -1,15 +1,9 @@
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include "pcache.h"
 
-#define MAX_SIZE 1049000
-#define MAX_OBJ_SIZE 102400
-
-
+// removes the last element from the cache
 static void cache_evict(cache* c){
     object* temp = c->end;
-    c->size = c->size - (strlen(temp->data) + 1);
+    c->size -= temp->size;
     c->end = c->end->prev;
     c->end->next = NULL;
     free(temp->key);
@@ -18,6 +12,7 @@ static void cache_evict(cache* c){
     return;
 }
 
+// creates a new cache struct and initializes it
 cache* cache_new(){
     cache* c;
     c = malloc(sizeof(cache));
@@ -27,6 +22,7 @@ cache* cache_new(){
     return c;
 }
 
+// frees the cache struct and any objects it points to
 void cache_free(cache* c){
     object* current = c->start;
     object* next = NULL;
@@ -42,10 +38,13 @@ void cache_free(cache* c){
     return;
 }
 
+// creates and adds a new object to the cache
+// also remove elements from the cache to keep size(cache) < MAX_SIZE
 void cache_add(cache* c, char* key, char* data, int size){
     object* obj = malloc(sizeof(object));
     obj->key = malloc(strlen(key)+1);
     obj->data = malloc(size*sizeof(char));
+    obj->size = size;
 
     strcpy(obj->key, key);
     memcpy(obj->data, data, size);
@@ -54,18 +53,19 @@ void cache_add(cache* c, char* key, char* data, int size){
     obj->prev = NULL;
     if(c->start != NULL) c->start->prev = obj;
     c->start = obj;
-    c->size += strlen(data)+1;
+    c->size += size;
 
     if(c->end == NULL) c->end = obj;
 
     // kick out last object
     while(c->size > MAX_SIZE){
-        printf("%d\n", (int)c->size);
         cache_evict(c);
     }
     return;
 }
 
+// moves an object to the front of the cache
+// this symbolizes it being the most recently accessed
 void cache_update(cache* c, object* obj){
     if(c->start == obj) return;
 
@@ -81,6 +81,7 @@ void cache_update(cache* c, object* obj){
     return;
 }
 
+// searches and returns a pointer to an object in the cache
 object* cache_lookup(cache* c, char* key){
     object* current = c->start;
 

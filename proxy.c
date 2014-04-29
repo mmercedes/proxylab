@@ -44,7 +44,8 @@ char *get_request_header(int cfd, rio_t *client, char *header);
 int GET_request(char *hostname, char *path, int port, char *unparsed,
                 int *serverfd, rio_t *server, int connfd);
 
-void respond_to_client(rio_t* server, int serverfd, int clientfd, char *cache_key);
+void respond_to_client(rio_t* server, int serverfd,
+                       int clientfd, char *cache_key);
 
 int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size);
 
@@ -141,6 +142,7 @@ void service_request(int clientfd){
     char *error = "ERROR 404 Not Found";
     char *header;
     object* cache_obj;
+    int cache_hit = 0;
 
     // initialize the request entries
     buffer[0] = '\0';
@@ -148,18 +150,17 @@ void service_request(int clientfd){
     hostname[0] = '\0';
     port = 80;
 
-    Rio_readinitb(&client, clientfd);   // initialize RIO reading
+    // initialize RIO reading
+    Rio_readinitb(&client, clientfd);
 
     // store the first line in client input to buffer
-    if (p_Rio_readlineb(0, clientfd, &client, buffer, MAXLINE) < 0){ 
-        return;
-    }
-    strcpy(cache_key, buffer);
+    p_Rio_readlineb(0, clientfd, &client, buffer, MAXLINE);
 
     if (parse_input(buffer, hostname, path, &port) != 0){
         fprintf(stderr, "Not a GET request: Abort\n");
         return;
     }
+    sprintf(cache_key, "%s %s", hostname, path);
 
     header = malloc(MAXLINE*sizeof(char));
     bzero(header, MAXLINE);
@@ -168,19 +169,27 @@ void service_request(int clientfd){
     // search the cache
     cache_r_lock();
     cache_obj = cache_lookup(p_cache, cache_key);
+    if(cache_obj != NULL) cache_hit = 1;
     cache_r_unlock();
 
     // cache hit
-    if(cache_obj != NULL){
-        Rio_writen(clientfd, (void*)cache_obj->data, strlen(cache_obj->data));
+    if(cache_hit){
+        printf("\n/////////////// CACHE HIT ////////////\n");
+        printf("%s\n\n", cache_key);
+
+        cache_r_lock();
+        rio_writen(clientfd, (void*)cache_obj->data, strlen(cache_obj->data));
+        cache_r_unlock();
+
         cache_w_lock();
         cache_update(p_cache, cache_obj);
         cache_w_unlock();
     }
     // send server request if not in cache
     else{
-        if(GET_request(hostname, path, port, header, &serverfd, &server, clientfd) != 0){
-            Rio_writen(clientfd, error, strlen(error));
+        if(GET_request(hostname, path, port, header, 
+                       &serverfd, &server, clientfd) != 0){
+            rio_writen(clientfd, error, strlen(error));
             Free(header);
             return;
         }  
@@ -192,51 +201,29 @@ void service_request(int clientfd){
 }
 
 
-int parse_input(char *buffer, char *hostname, char *path, int *port){
+int parse_input(char* buffer, char* hostname, char* path, int *port)
+{
+    // not a request we can handle
+    if (strncmp(buffer, "GET http://", strlen("GET http://")) != 0) return 1;
 
-    size_t i, j;  // index counters
+    int offset = strlen("GET http://");
+    int i = offset;
 
-    if (strncmp(buffer, "GET http://", strlen("GET http://")) != 0){
-        // the command is not "GET", or the url does not begin correctly
-        return -1;
-    }
+    // add hostname to buffer
+    while(buffer[i] != '\0')
+    {
+        if(buffer[i] == ':') break;
+        if(buffer[i] == '/') break;
 
-    // get the domain name, port number if any, path from input
-    // e.g. www.cs.cmu.edu from www.cs.cmu.edu:80/~213 or www.cs.cmu.edu/~213
-    i = 0;
-    i += strlen("GET http://");
-    j = 0;
-    while (i < strlen(buffer) - 1 && buffer[i] != ':' && 
-           buffer[i] != '/' && buffer[i] != ' '){
-        // write host name which ends at / or : or end of url
-        hostname[j] = buffer[i];
+        hostname[i-offset] = buffer[i];
         i++;
-        j++;
-    }
-    hostname[j] = '\0';   // end of string
-
-    if (buffer[i] == ':'){
-        // we get the port (integer)
-        i++;    // go to the number
-        sscanf(buffer + i, "%d", port);
-        while (i < strlen(buffer) - 1 && 
-               buffer[i] != '/' && buffer[i] != ' '){
-            // offset to path or end of url
-            i++;
-        }
     }
 
-    if (buffer[i] == '/'){
-        // we get the path
-        j = 0;
-        while (i < strlen(buffer) - 1 && buffer[i] != ' '){
-            // offset to end of url
-            path[j] = buffer[i];
-            i++;
-            j++;
-        }
-        path[j] = '\0';   // end of string
-    }
+    // end of host, obtain path and port if possible
+    if(buffer[i] == ':') sscanf(&buffer[i+1], "%d%s", port, path);
+    else sscanf(&buffer[i], "%s", path);
+
+    hostname[i-offset] = '\0';
     return 0;
 }
 
@@ -299,7 +286,8 @@ int GET_request(char* hostname, char* path, int port, char *header,
     p_Rio_writen(*serverfd, connfd, "\r\n", strlen("\r\n"));
     p_Rio_writen(*serverfd, connfd, user_agent_hdr, strlen(user_agent_hdr));
     p_Rio_writen(*serverfd, connfd, accept_hdr, strlen(accept_hdr));
-    p_Rio_writen(*serverfd, connfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
+    p_Rio_writen(*serverfd, connfd, accept_encoding_hdr,
+                 strlen(accept_encoding_hdr));
     p_Rio_writen(*serverfd, connfd, connection_hdr, strlen(connection_hdr));
     p_Rio_writen(*serverfd, connfd, proxy_hdr, strlen(proxy_hdr));
     p_Rio_writen(*serverfd, connfd, header, strlen(header));
@@ -308,35 +296,36 @@ int GET_request(char* hostname, char* path, int port, char *header,
     return 0;
 }
 
-void respond_to_client(rio_t *server, int serverfd, int clientfd, char* cache_key){
+void respond_to_client(rio_t *server, int serverfd,
+                       int clientfd, char* cache_key){
+    
     char buffer[MAXLINE];
     char cache_data[MAX_OBJECT_SIZE];
-    char *current_pos = cache_data;
-    size_t data_size = 0;
-    size_t bytes = 0;
-    int cacheable = 0;
-    char terminator = '\0';
+    char *ptr = cache_data;
+    int offset = 0;
+    int bytes = 0;
+    //char terminator = '\0';
 
     bzero(buffer, MAXLINE);
 
-    while((bytes = p_Rio_readlineb(serverfd, clientfd, server, buffer, MAXLINE)) > 0){
+    printf("\n///////////// SERVER REQUEST /////////////\n");
+    printf("%s\n\n", cache_key);
+
+
+    while((bytes = Rio_readnb(server, buffer, MAXLINE)) > 0){
         p_Rio_writen(clientfd, serverfd, buffer, bytes);
-        data_size += bytes;
 
-        if(data_size > MAX_OBJECT_SIZE) cacheable = 0;
-        else cacheable = 1;
-
-        if(cacheable){
-            memcpy(current_pos, buffer, bytes);
-            current_pos += bytes;
+        if(offset+bytes < MAX_OBJECT_SIZE){
+            memcpy(ptr+offset, buffer, bytes);
         }
+        offset += bytes;
         bzero(buffer, MAXLINE);
     }
-    if(data_size < MAX_OBJECT_SIZE) memcpy(current_pos, &terminator, 1);
 
-    if(cacheable){
+    if(offset < MAX_OBJECT_SIZE && offset > 0){
+        //memcpy(current_pos, &terminator, 1);
         cache_w_lock();
-        cache_add(p_cache, cache_key, cache_data);
+        cache_add(p_cache, cache_key, cache_data, offset);
         cache_w_unlock();
     }
     return;

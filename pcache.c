@@ -74,3 +74,4 @@ object* cache_lookup(cache* c, char* key){
 	}
 	return NULL;
 }
+

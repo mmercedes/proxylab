@@ -39,12 +39,14 @@ void service_request(int connfd);
 // used in: service_request
 int parse_input(char *buffer, char *hostname, char *path, int *port);
 
-char *get_request_header(rio_t *client, char *header);
+char *get_request_header(int cfd, rio_t *client, char *header);
 
 int GET_request(char *hostname, char *path, int port, char *unparsed,
                 int *serverfd, rio_t *server, int connfd);
 
 void respond_to_client(rio_t* server, int serverfd, int clientfd, char *cache_key);
+
+int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size);
 
 void cache_r_lock();
 void cache_r_unlock();
@@ -149,7 +151,7 @@ void service_request(int clientfd){
     Rio_readinitb(&client, clientfd);   // initialize RIO reading
 
     // store the first line in client input to buffer
-    if (Rio_readlineb(&client, buffer, MAXLINE) < 0){ 
+    if (p_Rio_readlineb(0, clientfd, &client, buffer, MAXLINE) < 0){ 
         return;
     }
     strcpy(cache_key, buffer);
@@ -161,7 +163,7 @@ void service_request(int clientfd){
 
     header = malloc(MAXLINE*sizeof(char));
     bzero(header, MAXLINE);
-    header = get_request_header(&client, header);
+    header = get_request_header(clientfd, &client, header);
     
     // search the cache
     cache_r_lock();
@@ -238,12 +240,12 @@ int parse_input(char *buffer, char *hostname, char *path, int *port){
     return 0;
 }
 
-char *get_request_header(rio_t *client, char *header){
+char *get_request_header(int cfd, rio_t *client, char *header){
     size_t size = MAXLINE;
     int bytes;
     char buffer[MAXLINE];
 
-    while((bytes = Rio_readlineb(client, buffer, MAXLINE))){
+    while((bytes = p_Rio_readlineb(0, cfd, client, buffer, MAXLINE))){
         if(buffer[0] == '\r'){
             strcat(header, buffer);
             return header;
@@ -259,6 +261,18 @@ char *get_request_header(rio_t *client, char *header){
     }
     return header;
 }
+
+int p_Rio_readlineb(int sfd, int cfd, rio_t *conn, char *buffer, size_t size){
+    int bytes;
+
+    if((bytes = rio_readlineb(conn, buffer, size)) < 0){
+        if(sfd) close(sfd);
+        close(cfd);
+        Pthread_exit(NULL);
+    }
+    return bytes;
+}
+
 
 void p_Rio_writen(int sfd, int cfd, const char* buf, size_t len){
     if(rio_writen(sfd, (void*)buf, len) < 0){
@@ -301,10 +315,11 @@ void respond_to_client(rio_t *server, int serverfd, int clientfd, char* cache_ke
     size_t data_size = 0;
     size_t bytes = 0;
     int cacheable = 0;
+    char terminator = '\0';
 
     bzero(buffer, MAXLINE);
 
-    while((bytes = Rio_readlineb(server, buffer, MAXLINE)) > 0){
+    while((bytes = p_Rio_readlineb(serverfd, clientfd, server, buffer, MAXLINE)) > 0){
         p_Rio_writen(clientfd, serverfd, buffer, bytes);
         data_size += bytes;
 
@@ -317,9 +332,11 @@ void respond_to_client(rio_t *server, int serverfd, int clientfd, char* cache_ke
         }
         bzero(buffer, MAXLINE);
     }
+    if(data_size < MAX_OBJECT_SIZE) memcpy(current_pos, &terminator, 1);
+
     if(cacheable){
         cache_w_lock();
-        cache_add(p_cache, cache_key, cache_data, data_size);
+        cache_add(p_cache, cache_key, cache_data);
         cache_w_unlock();
     }
     return;

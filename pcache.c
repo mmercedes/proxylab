@@ -45,7 +45,8 @@ void cache_add(cache* c, char* key, char* data, size_t size){
 	c->size += size;
 
 	// kick out last object
-	if(c->size > MAX_SIZE){
+	while(c->size > MAX_SIZE){
+		c->size -= strlen(c->end->data);
 		free(c->end->key);
 		free(c->end->data);
 		c->end = c->end->prev;

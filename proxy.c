@@ -42,9 +42,9 @@ int parse_input(char *buffer, char *hostname, char *path, int *port);
 char *get_request_header(rio_t *client, char *header);
 
 int GET_request(char *hostname, char *path, int port, char *unparsed,
-                int *serverfd, rio_t *server);
+                int *serverfd, rio_t *server, int connfd);
 
-void respond_to_client(rio_t* server, int clientfd, char *cache_key);
+void respond_to_client(rio_t* server, int serverfd, int clientfd, char *cache_key);
 
 void cache_r_lock();
 void cache_r_unlock();
@@ -118,8 +118,6 @@ void *proxy_thread(void *vargp){
     fd = *(int *)vargp;
     Free(vargp);    // done with fd, free the memory allocated in main
 
-    // Service client by writing the the file fd, from which
-    // the client reads the data
     service_request(fd); 
 
     Close(fd);
@@ -179,12 +177,12 @@ void service_request(int clientfd){
     }
     // send server request if not in cache
     else{
-        if(GET_request(hostname, path, port, header, &serverfd, &server) != 0){
+        if(GET_request(hostname, path, port, header, &serverfd, &server, clientfd) != 0){
             Rio_writen(clientfd, error, strlen(error));
             Free(header);
             return;
         }  
-        respond_to_client(&server, clientfd, cache_key);
+        respond_to_client(&server, serverfd, clientfd, cache_key);
         Close(serverfd);
     }
     Free(header);
@@ -262,12 +260,16 @@ char *get_request_header(rio_t *client, char *header){
     return header;
 }
 
-void p_Rio_writen(int fd, const char* buf, size_t len){
-    Rio_writen(fd, (void*)buf, len);
+void p_Rio_writen(int sfd, int cfd, const char* buf, size_t len){
+    if(rio_writen(sfd, (void*)buf, len) < 0){
+        close(sfd);
+        close(cfd);
+        Pthread_exit(NULL);
+    }
 }
 
 int GET_request(char* hostname, char* path, int port, char *header,
-                int* serverfd, rio_t* server){
+                int* serverfd, rio_t* server, int connfd){
 
     *serverfd = open_clientfd_r(hostname, port);
 
@@ -275,36 +277,35 @@ int GET_request(char* hostname, char* path, int port, char *header,
     if(*serverfd < 0) return 1;
                                                         
     Rio_readinitb(server, *serverfd);
-    p_Rio_writen(*serverfd, "GET ", strlen("GET "));
-    p_Rio_writen(*serverfd, path, strlen(path));
-    p_Rio_writen(*serverfd, " HTTP/1.0\r\n", strlen(" HTTP/1.0\r\n"));
-    p_Rio_writen(*serverfd, "Host: ", strlen("Host: "));
-    p_Rio_writen(*serverfd, hostname, strlen(hostname));
-    p_Rio_writen(*serverfd, "\r\n", strlen("\r\n"));
-    p_Rio_writen(*serverfd, user_agent_hdr, strlen(user_agent_hdr));
-    p_Rio_writen(*serverfd, accept_hdr, strlen(accept_hdr));
-    p_Rio_writen(*serverfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
-    p_Rio_writen(*serverfd, connection_hdr, strlen(connection_hdr));
-    p_Rio_writen(*serverfd, proxy_hdr, strlen(proxy_hdr));
-    p_Rio_writen(*serverfd, header, strlen(header));
-    p_Rio_writen(*serverfd, "\r\n", strlen("\r\n"));
+    p_Rio_writen(*serverfd, connfd, "GET ", strlen("GET "));
+    p_Rio_writen(*serverfd, connfd, path, strlen(path));
+    p_Rio_writen(*serverfd, connfd, " HTTP/1.0\r\n", strlen(" HTTP/1.0\r\n"));
+    p_Rio_writen(*serverfd, connfd, "Host: ", strlen("Host: "));
+    p_Rio_writen(*serverfd, connfd, hostname, strlen(hostname));
+    p_Rio_writen(*serverfd, connfd, "\r\n", strlen("\r\n"));
+    p_Rio_writen(*serverfd, connfd, user_agent_hdr, strlen(user_agent_hdr));
+    p_Rio_writen(*serverfd, connfd, accept_hdr, strlen(accept_hdr));
+    p_Rio_writen(*serverfd, connfd, accept_encoding_hdr, strlen(accept_encoding_hdr));
+    p_Rio_writen(*serverfd, connfd, connection_hdr, strlen(connection_hdr));
+    p_Rio_writen(*serverfd, connfd, proxy_hdr, strlen(proxy_hdr));
+    p_Rio_writen(*serverfd, connfd, header, strlen(header));
+    p_Rio_writen(*serverfd, connfd, "\r\n", strlen("\r\n"));
 
     return 0;
 }
 
-void respond_to_client(rio_t *server, int clientfd, char* cache_key){
+void respond_to_client(rio_t *server, int serverfd, int clientfd, char* cache_key){
     char buffer[MAXLINE];
     char cache_data[MAX_OBJECT_SIZE];
     char *current_pos = cache_data;
     size_t data_size = 0;
     size_t bytes = 0;
-    int cache_space;
     int cacheable = 0;
 
     bzero(buffer, MAXLINE);
 
     while((bytes = Rio_readlineb(server, buffer, MAXLINE)) > 0){
-        p_Rio_writen(clientfd, buffer, bytes);
+        p_Rio_writen(clientfd, serverfd, buffer, bytes);
         data_size += bytes;
 
         if(data_size > MAX_OBJECT_SIZE) cacheable = 0;
@@ -317,14 +318,9 @@ void respond_to_client(rio_t *server, int clientfd, char* cache_key){
         bzero(buffer, MAXLINE);
     }
     if(cacheable){
-        cache_r_lock();
-        cache_space = (p_cache->size+data_size <= MAX_CACHE_SIZE);
-        cache_r_unlock();
-        if(cache_space){
-            cache_w_lock();
-            cache_add(p_cache, cache_key, cache_data, data_size);
-            cache_w_unlock();
-        }
+        cache_w_lock();
+        cache_add(p_cache, cache_key, cache_data, data_size);
+        cache_w_unlock();
     }
     return;
 }
@@ -345,13 +341,11 @@ void cache_r_unlock(){
     return;
 }
 
-void cache_w_lock(){
+void inline cache_w_lock(){
     P(&w);
-    return;
 }
 
-void cache_w_unlock(){
+void inline cache_w_unlock(){
     V(&w);
-    return;
 }
 

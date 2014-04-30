@@ -21,6 +21,8 @@
 // Recommended max cache and object sizes 
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
+ // 8kb is the max header size accepted by Apache servers
+#define MAX_HEADER_SIZE 8192  
 
 #ifndef DEBUG
 #define debug_printf(...) {}
@@ -53,7 +55,7 @@ void service_request(int connfd);
 int parse_input(char *buffer, char *hostname, char *path, int *port);
 
 // reads from the client and forms a header to send to the requested server
-char *get_request_header(int cfd, rio_t *client, char *header);
+void get_request_header(int cfd, rio_t *client, char *header);
 
 // makes a GET request on behalf of the client to the requested server
 int GET_request(char *hostname, char *path, int port, char *unparsed,
@@ -170,12 +172,12 @@ void service_request(int clientfd){
     char cache_key[MAXLINE];
     char hostname[MAXLINE];
     char path[MAXLINE];
+    char *header;
     int port;
     int serverfd;
     rio_t client;
     rio_t server;
     char *error = "ERROR 404 Not Found";
-    char *header;
     object* cache_obj;
     int cache_hit = 0;
 
@@ -197,9 +199,9 @@ void service_request(int clientfd){
     // create a key for future cache lookup
     sprintf(cache_key, "%s %s", hostname, path);
 
-    header = malloc(MAXLINE*sizeof(char));
-    bzero(header, MAXLINE);
-    header = get_request_header(clientfd, &client, header);
+    header = malloc(MAX_HEADER_SIZE);
+    bzero(header, MAX_HEADER_SIZE);
+    get_request_header(clientfd, &client, header);
     
     // search the cache
     cache_r_lock();
@@ -230,7 +232,7 @@ void service_request(int clientfd){
         respond_to_client(&server, serverfd, clientfd, cache_key);
         Close(serverfd);
     }
-    Free(header);
+    free(header);
     return;
 }
 
@@ -262,17 +264,15 @@ int parse_input(char *buffer, char *hostname, char *path, int *port)
 }
 
 
-char *get_request_header(int cfd, rio_t *client, char *header){
-    int size = MAXLINE;
+void get_request_header(int cfd, rio_t *client, char *header){
     int bytes;
     int total_bytes = 0;
     char buffer[MAXLINE];
 
-
     while((bytes = p_Rio_readlineb(0, cfd, client, buffer, MAXLINE))){
         if(buffer[0] == '\r'){
-            strcat(header, buffer);
-            return header;
+            strncat(header, buffer, bytes);
+            return;
         }
         // proxy overwrites these fields so skip reading them from client
         if(strstr(buffer, "Host:") != NULL) continue;
@@ -281,15 +281,12 @@ char *get_request_header(int cfd, rio_t *client, char *header){
         if(strstr(buffer, "Connection:") != NULL) continue;
         if(strstr(buffer, "Proxy-Connection:") != NULL) continue;
 
-        // make sure our header is big enough to continue reading
+        // make sure we don't exceed the header size
         total_bytes += bytes;
-        if(total_bytes > size){
-            size += MAXLINE;
-            header = realloc(header, size);
-        }
-        strcat(header, buffer);
+        if(total_bytes > MAX_HEADER_SIZE) break;
+        strncat(header, buffer, bytes);
     }
-    return header;
+    return;
 }
 
 
